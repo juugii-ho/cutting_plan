@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-H-Beam 철판 절단 최적화 웹 애플리케이션 (완전판)
+H-Beam 철판 절단 최적화 웹 애플리케이션 (PDF 포함 완전판)
 Streamlit Cloud 무료 배포 가능
-
-hbeam_cutting_optimizer_v2.py의 전체 로직 포함
 """
 
 import streamlit as st
@@ -16,23 +14,29 @@ from collections import defaultdict
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
+# PDF용
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas as pdf_canvas
+from reportlab.lib import colors
+
 # ============================================================
 # 제약조건 상수
 # ============================================================
-MAX_LENGTH = 22000  # mm
-MIN_LENGTH = 4000   # mm
-MAX_WIDTH = 4200    # mm
-MIN_WIDTH = 1500    # mm
-MAX_WEIGHT = 18000  # kg
+MAX_LENGTH = 22000
+MIN_LENGTH = 4000
+MAX_WIDTH = 4200
+MIN_WIDTH = 1500
+MAX_WEIGHT = 18000
 
-PREFERRED_LENGTH_MAX = 16000  # mm
-PREFERRED_LENGTH_MIN = 8000   # mm
-PREFERRED_WIDTH_MAX = 3000    # mm
-PREFERRED_WIDTH_MIN = 2100    # mm
+PREFERRED_LENGTH_MAX = 16000
+PREFERRED_LENGTH_MIN = 8000
+PREFERRED_WIDTH_MAX = 3000
+PREFERRED_WIDTH_MIN = 2100
 
-NO_MERGE_LENGTH = 8000  # 이 길이 이상이면 길이 방향 합침 금지
-STEEL_DENSITY = 7.85e-6  # kg/mm³
-LOSS_THRESHOLD = 0.10    # 10% 로스 기준
+NO_MERGE_LENGTH = 8000
+STEEL_DENSITY = 7.85e-6
+LOSS_THRESHOLD = 0.10
 
 # ============================================================
 # 데이터 클래스
@@ -40,7 +44,7 @@ LOSS_THRESHOLD = 0.10    # 10% 로스 기준
 @dataclass
 class PlateItem:
     source_no: int
-    plate_type: int  # 1=Web, 2=Upper Flange, 3=Lower Flange
+    plate_type: int
     material: str
     thickness: float
     length: float
@@ -55,8 +59,8 @@ class PlacedPlate:
     thickness: float
     length: float
     width: float
-    x: float  # 배치 x 좌표
-    y: float  # 배치 y 좌표
+    x: float
+    y: float
 
 @dataclass
 class MasterPlate:
@@ -126,7 +130,7 @@ def convert_hbeam_to_plates(orders: List[Dict]) -> List[PlateItem]:
     return plates
 
 # ============================================================
-# 2D Bin Packing (우선순위 기반 최적화)
+# BinPacker 클래스
 # ============================================================
 class BinPacker:
     def __init__(self, material: str, thickness: float, allow_rotation: bool = False):
@@ -136,13 +140,11 @@ class BinPacker:
         self.bins: List[Dict] = []
     
     def pack(self, plates: List[Tuple[int, int, float, float]]) -> List[MasterPlate]:
-        """메인 패킹 함수 - (길이, 너비) 조합으로 그룹화하여 최적화"""
         long_plates = [p for p in plates if p[2] >= NO_MERGE_LENGTH]
         short_plates = [p for p in plates if p[2] < NO_MERGE_LENGTH]
         
         results = []
         
-        # 긴 철판: (길이, 너비) 조합으로 그룹화
         if long_plates:
             groups: Dict[Tuple[float, float], List] = defaultdict(list)
             for p in long_plates:
@@ -154,7 +156,6 @@ class BinPacker:
                 for bin_info in bins:
                     results.append(self._create_master_plate(bin_info, length))
         
-        # 짧은 철판: (길이, 너비) 조합으로 그룹화
         if short_plates:
             groups: Dict[Tuple[float, float], List] = defaultdict(list)
             for p in short_plates:
@@ -170,7 +171,6 @@ class BinPacker:
         return results
     
     def _pack_uniform_group_optimized(self, plates: List, length: float) -> List[Dict]:
-        """동일 규격 그룹 최적화 패킹 (긴 철판용)"""
         if not plates:
             return []
         
@@ -212,7 +212,6 @@ class BinPacker:
                 
                 return bins
         
-        # 기존 로직 (1행 배치)
         max_cols_absolute = int(MAX_WIDTH / plate_width) if plate_width > 0 else 1
         max_cols_preferred = int(PREFERRED_WIDTH_MAX / plate_width) if plate_width > 0 else 1
         
@@ -223,7 +222,6 @@ class BinPacker:
         
         bins = self._distribute_plates(plates, plate_width, max_cols_preferred)
         
-        # 마지막 빈 최적화
         for _ in range(20):
             if len(bins) < 2:
                 break
@@ -270,7 +268,6 @@ class BinPacker:
         return bins
     
     def _find_optimal_2d_layout(self, n: int, plate_length: float, plate_width: float) -> Optional[Tuple[int, int]]:
-        """n개 철판을 배치하는 최적의 (행 수, 열 수) 찾기"""
         best_layout = None
         best_area = float('inf')
         best_preferred = False
@@ -311,12 +308,10 @@ class BinPacker:
     
     def _find_best_distribution(self, total_cols: int, plate_width: float, 
                                  length: float, max_cols: int) -> Optional[List[int]]:
-        """주어진 열 수를 분배하는 최적의 방법 찾기"""
         best_option = None
         best_area = float('inf')
         best_preferred_score = -1
         
-        # 1빈으로 합치기
         if total_cols * plate_width <= MAX_WIDTH:
             width = total_cols * plate_width
             effective_width = max(width, MIN_WIDTH)
@@ -330,7 +325,6 @@ class BinPacker:
                     best_option = [total_cols]
                     best_preferred_score = preferred_score
         
-        # 2빈으로 분배
         for cols1 in range(1, total_cols):
             cols2 = total_cols - cols1
             
@@ -362,7 +356,6 @@ class BinPacker:
         return best_option
     
     def _distribute_plates(self, plates: List, plate_width: float, max_cols: int) -> List[Dict]:
-        """초기 균등 분배"""
         total_plates = len(plates)
         
         num_bins = (total_plates + max_cols - 1) // max_cols
@@ -399,7 +392,6 @@ class BinPacker:
     
     def _create_bins_from_distribution(self, plates: List, distribution: List[int], 
                                         plate_width: float) -> List[Dict]:
-        """분배 정보에 따라 빈 생성"""
         bins = []
         plate_idx = 0
         
@@ -428,7 +420,6 @@ class BinPacker:
         return bins
     
     def _calc_total_area(self, bins: List[Dict], plate_width: float, length: float) -> float:
-        """빈들의 총 면적 계산"""
         total = 0
         for b in bins:
             width = max(b['width_used'], MIN_WIDTH)
@@ -436,7 +427,6 @@ class BinPacker:
         return total
     
     def _pack_uniform_group_2d_optimized(self, plates: List, length: float) -> List[Dict]:
-        """동일 규격 2D 패킹 (짧은 철판용) - 최적 배열 탐색"""
         if not plates:
             return []
         
@@ -504,7 +494,6 @@ class BinPacker:
     
     def _distribute_2d(self, plates: List, plate_width: float, plate_length: float,
                        rows_per_col: int, max_cols: int) -> List[Dict]:
-        """2D 초기 분배"""
         total_plates = len(plates)
         total_cols = (total_plates + rows_per_col - 1) // rows_per_col
         
@@ -546,7 +535,6 @@ class BinPacker:
     def _create_bins_2d_from_distribution(self, plates: List, distribution: List[int],
                                            plate_width: float, plate_length: float,
                                            rows_per_col: int) -> List[Dict]:
-        """2D 분배에 따른 빈 생성"""
         bins = []
         plate_idx = 0
         
@@ -579,7 +567,6 @@ class BinPacker:
         return bins
     
     def _create_master_plate(self, bin_info: Dict, length: float) -> MasterPlate:
-        """빈을 MasterPlate로 변환"""
         width = bin_info.get('width_used', bin_info.get('max_width', MIN_WIDTH))
         width = max(width, MIN_WIDTH)
         length = max(bin_info.get('total_length', length), MIN_LENGTH)
@@ -601,7 +588,6 @@ class BinPacker:
 # 메인 최적화 함수
 # ============================================================
 def optimize_cutting(plates: List[PlateItem], allow_rotation: bool = False) -> List[MasterPlate]:
-    """철판 리스트를 최적의 통철판으로 배치"""
     groups: Dict[Tuple, List] = defaultdict(list)
     
     for plate in plates:
@@ -616,10 +602,8 @@ def optimize_cutting(plates: List[PlateItem], allow_rotation: bool = False) -> L
         results = packer.pack(plate_list)
         all_results.extend(results)
     
-    # 로스가 큰 빈들 합치기
     all_results = merge_low_usage_bins(all_results)
     
-    # 번호 부여 및 정렬
     all_results.sort(key=lambda mp: (mp.material, mp.thickness, -mp.length, -mp.width))
     for i, mp in enumerate(all_results, 1):
         mp.seq = i
@@ -628,7 +612,6 @@ def optimize_cutting(plates: List[PlateItem], allow_rotation: bool = False) -> L
 
 
 def merge_low_usage_bins(master_plates: List[MasterPlate], threshold: float = 0.85) -> List[MasterPlate]:
-    """로스가 큰 빈들을 같은 재질/두께끼리 합치기"""
     good_bins = []
     low_usage_bins: Dict[Tuple[str, float], List[MasterPlate]] = defaultdict(list)
     
@@ -683,7 +666,6 @@ def merge_low_usage_bins(master_plates: List[MasterPlate], threshold: float = 0.
 
 def find_optimal_layout_for_merge(n: int, plate_length: float, plate_width: float, 
                                    thickness: float) -> Optional[Tuple[int, int]]:
-    """n개 철판을 배치하는 최적의 (행, 열) 찾기"""
     best_layout = None
     best_area = float('inf')
     
@@ -717,7 +699,6 @@ def find_optimal_layout_for_merge(n: int, plate_length: float, plate_width: floa
 def create_merged_bins(plates: List, material: str, thickness: float,
                        plate_length: float, plate_width: float,
                        rows: int, cols: int) -> List[MasterPlate]:
-    """합쳐진 철판들로 새 통철판 생성"""
     results = []
     plate_idx = 0
     
@@ -794,15 +775,13 @@ def create_merged_bins(plates: List, material: str, thickness: float,
 
 
 # ============================================================
-# 결과 Excel 저장 (요청한 형식)
+# Excel 저장 함수들
 # ============================================================
 def save_result_formatted(master_plates: List[MasterPlate], orders: List[Dict]) -> io.BytesIO:
-    """최종 결과를 요청한 형식으로 저장"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Cutting Result"
     
-    # 스타일 정의
     header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
     header_font = Font(bold=True, size=10)
     thin_border = Border(
@@ -811,7 +790,6 @@ def save_result_formatted(master_plates: List[MasterPlate], orders: List[Dict]) 
     )
     center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
     
-    # 헤더 작성
     headers_row1 = ["NO", "순위", "BOM\n재질", "MARK", "SIZE", "", "", "", "", "규격", "길이", "Q'TY", "Total\nLength", "단중", "견적중량"]
     headers_row2 = ["", "", "", "", "SEC", "H1", "B", "T1", "T2", "", "", "", "", "", ""]
     
@@ -829,22 +807,18 @@ def save_result_formatted(master_plates: List[MasterPlate], orders: List[Dict]) 
         cell.border = thin_border
         cell.alignment = center_align
     
-    # 셀 병합
     ws.merge_cells('E1:I1')
     for col in [1, 2, 3, 4, 10, 11, 12, 13, 14, 15]:
         ws.merge_cells(start_row=1, start_column=col, end_row=2, end_column=col)
     
-    # 주문 딕셔너리
     order_dict = {o['no']: o for o in orders}
     
-    # 사용된 주문 집계
     used_orders = defaultdict(lambda: {'qty': 0, 'length': 0})
     for mp in master_plates:
         for plate in mp.placed_plates:
             used_orders[plate.source_no]['qty'] += 1
             used_orders[plate.source_no]['length'] += plate.length
     
-    # 데이터 작성
     row_num = 3
     total_qty = 0
     total_length = 0
@@ -895,7 +869,6 @@ def save_result_formatted(master_plates: List[MasterPlate], orders: List[Dict]) 
         total_weight += est_weight
         row_num += 1
     
-    # 합계 행
     ws.cell(row=row_num, column=1, value="합       계")
     ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=11)
     ws.cell(row=row_num, column=12, value=total_qty)
@@ -910,7 +883,6 @@ def save_result_formatted(master_plates: List[MasterPlate], orders: List[Dict]) 
         cell.font = Font(bold=True)
         cell.fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
     
-    # 열 너비
     widths = [6, 6, 12, 10, 6, 6, 6, 6, 6, 22, 10, 8, 12, 10, 12]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
@@ -922,7 +894,6 @@ def save_result_formatted(master_plates: List[MasterPlate], orders: List[Dict]) 
 
 
 def create_summary_excel(master_plates: List[MasterPlate]) -> io.BytesIO:
-    """통철판 요약 Excel 생성"""
     data = []
     for mp in master_plates:
         details = "; ".join([f"#{p.source_no}({get_plate_type_name(p.plate_type)})" 
@@ -950,86 +921,262 @@ def create_summary_excel(master_plates: List[MasterPlate]) -> io.BytesIO:
 
 
 # ============================================================
+# PDF 생성
+# ============================================================
+def get_tick_step(size: float) -> int:
+    if size <= 2000: return 500
+    elif size <= 5000: return 1000
+    elif size <= 10000: return 2000
+    elif size <= 20000: return 5000
+    else: return 10000
+
+def generate_pdf(master_plates: List[MasterPlate]) -> io.BytesIO:
+    output = io.BytesIO()
+    c = pdf_canvas.Canvas(output, pagesize=landscape(A4))
+    page_width, page_height = landscape(A4)
+    
+    margin = 30
+    
+    # 색상 매핑
+    material_thickness_set = set()
+    for mp in master_plates:
+        material_thickness_set.add((mp.material, mp.thickness))
+    
+    color_palette = [
+        colors.Color(0.98, 0.6, 0.6),
+        colors.Color(0.6, 0.98, 0.6),
+        colors.Color(0.6, 0.6, 0.98),
+        colors.Color(0.98, 0.98, 0.6),
+        colors.Color(0.98, 0.6, 0.98),
+        colors.Color(0.6, 0.98, 0.98),
+        colors.Color(0.98, 0.8, 0.6),
+        colors.Color(0.8, 0.6, 0.98),
+        colors.Color(0.6, 0.98, 0.8),
+        colors.Color(0.98, 0.6, 0.8),
+        colors.Color(0.8, 0.98, 0.6),
+        colors.Color(0.6, 0.8, 0.98),
+    ]
+    
+    material_thickness_colors = {}
+    for i, (mat, thk) in enumerate(sorted(material_thickness_set)):
+        material_thickness_colors[(mat, thk)] = color_palette[i % len(color_palette)]
+    
+    # 패턴 그룹화
+    def get_pattern_key(mp):
+        plate_info = tuple(sorted([(p.length, p.width, p.x, p.y) for p in mp.placed_plates]))
+        return (mp.material, mp.thickness, mp.length, mp.width, plate_info)
+    
+    pattern_groups = defaultdict(list)
+    for mp in master_plates:
+        key = get_pattern_key(mp)
+        pattern_groups[key].append(mp)
+    
+    unique_patterns = []
+    for key, mps in pattern_groups.items():
+        unique_patterns.append((mps[0], mps[0].seq, mps[-1].seq, len(mps)))
+    unique_patterns.sort(key=lambda x: x[1])
+    
+    # 요약 페이지
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, page_height - margin, "H-Beam Cutting Optimization Report")
+    
+    c.setFont("Helvetica", 10)
+    y = page_height - margin - 30
+    
+    total_weight = sum(mp.weight for mp in master_plates)
+    avg_usage = sum(mp.usage_rate for mp in master_plates) / len(master_plates) * 100
+    
+    c.drawString(margin, y, f"Total Master Plates: {len(master_plates)}")
+    y -= 15
+    c.drawString(margin, y, f"Unique Patterns: {len(unique_patterns)}")
+    y -= 15
+    c.drawString(margin, y, f"Total Weight: {total_weight/1000:,.1f} ton")
+    y -= 15
+    c.drawString(margin, y, f"Average Usage: {avg_usage:.1f}%")
+    y -= 30
+    
+    # 색상 범례
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin, y, "Color Legend (Material / Thickness):")
+    y -= 15
+    
+    c.setFont("Helvetica", 9)
+    legend_x = margin
+    for (mat, thk), color in sorted(material_thickness_colors.items()):
+        c.setFillColor(color)
+        c.rect(legend_x, y - 3, 15, 12, fill=True, stroke=True)
+        c.setFillColor(colors.black)
+        c.drawString(legend_x + 20, y, f"{mat} / {thk}mm")
+        y -= 15
+        if y < 50:
+            legend_x += 200
+            y = page_height - margin - 100
+    
+    c.showPage()
+    
+    # 레이아웃 페이지
+    plates_per_page = 3
+    draw_height = (page_height - margin * 2 - 30) / plates_per_page
+    draw_width = page_width - margin * 2
+    
+    total_pages = (len(unique_patterns) + plates_per_page - 1) // plates_per_page
+    
+    for page_idx in range(total_pages):
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(margin, page_height - 20, f"Layout Drawings - Page {page_idx + 1}/{total_pages}")
+        
+        start_idx = page_idx * plates_per_page
+        end_idx = min(start_idx + plates_per_page, len(unique_patterns))
+        
+        for i, (mp, start_seq, end_seq, count) in enumerate(unique_patterns[start_idx:end_idx]):
+            y_pos = page_height - margin - 30 - i * draw_height
+            plate_color = material_thickness_colors.get((mp.material, mp.thickness), colors.lightgrey)
+            
+            draw_master_plate_pdf(c, mp, margin, y_pos - draw_height + 20, 
+                                 draw_width, draw_height - 30,
+                                 start_seq, end_seq, count, plate_color)
+        
+        c.showPage()
+    
+    c.save()
+    output.seek(0)
+    return output
+
+
+def draw_master_plate_pdf(c, mp, x, y, max_width, max_height, start_seq, end_seq, count, plate_color):
+    if start_seq == end_seq:
+        title = f"#{start_seq}"
+    else:
+        title = f"#{start_seq}~{end_seq}"
+    
+    title += f" | {mp.material} {mp.thickness}mm | {mp.length:.0f}L x {mp.width:.0f}W"
+    title += f" | {mp.weight:,.0f}kg | {mp.plate_count}pcs | {mp.usage_rate*100:.0f}%"
+    
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(x, y + max_height + 5, title)
+    
+    if count > 1:
+        c.setFillColor(colors.red)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(x + max_width - 30, y + max_height - 10, f"x{count}")
+        c.setFillColor(colors.black)
+    
+    margin = 50
+    draw_width = max_width - margin * 2
+    draw_height = max_height - margin - 10
+    
+    scale_x = draw_width / mp.length if mp.length > 0 else 1
+    scale_y = draw_height / mp.width if mp.width > 0 else 1
+    scale = min(scale_x, scale_y) * 0.9
+    
+    plate_draw_width = mp.length * scale
+    plate_draw_height = mp.width * scale
+    
+    offset_x = x + margin + (draw_width - plate_draw_width) / 2
+    offset_y = y + margin / 2 + (draw_height - plate_draw_height) / 2
+    
+    c.setFillColor(colors.Color(1.0, 1.0, 0.85))
+    c.setStrokeColor(colors.black)
+    c.setLineWidth(1.5)
+    c.rect(offset_x, offset_y, plate_draw_width, plate_draw_height, fill=True, stroke=True)
+    
+    for plate in mp.placed_plates:
+        plate_x_pos = plate.y if plate.y >= 0 and plate.y <= mp.length else 0
+        plate_y_pos = plate.x if plate.x >= 0 and plate.x <= mp.width else 0
+        
+        draw_px = offset_x + plate_x_pos * scale
+        draw_py = offset_y + plate_y_pos * scale
+        draw_pw = min(plate.length * scale, plate_draw_width - (draw_px - offset_x))
+        draw_ph = min(plate.width * scale, plate_draw_height - (draw_py - offset_y))
+        
+        if draw_pw > 0 and draw_ph > 0:
+            c.setFillColor(plate_color)
+            c.setStrokeColor(colors.Color(0.3, 0.3, 0.3))
+            c.setLineWidth(0.5)
+            c.rect(draw_px, draw_py, draw_pw, draw_ph, fill=True, stroke=True)
+            
+            if draw_pw > 30 and draw_ph > 20:
+                c.setFillColor(colors.black)
+                c.setFont("Helvetica", 5)
+                text_x = draw_px + draw_pw / 2
+                text_y = draw_py + draw_ph / 2
+                c.drawCentredString(text_x, text_y + 6, f"#{plate.source_no}")
+                c.drawCentredString(text_x, text_y, get_plate_type_name(plate.plate_type))
+                c.drawCentredString(text_x, text_y - 6, f"{plate.length:.0f}x{plate.width:.0f}")
+    
+    c.setFont("Helvetica", 7)
+    c.setFillColor(colors.black)
+    c.drawCentredString(offset_x + plate_draw_width / 2, offset_y - 20, "Length (mm)")
+    
+    c.saveState()
+    c.translate(offset_x - 20, offset_y + plate_draw_height / 2)
+    c.rotate(90)
+    c.drawCentredString(0, 0, "Width (mm)")
+    c.restoreState()
+    
+    c.setFont("Helvetica", 6)
+    c.setStrokeColor(colors.black)
+    c.setLineWidth(0.5)
+    
+    length_step = get_tick_step(mp.length)
+    for i in range(0, int(mp.length) + 1, length_step):
+        tick_x = offset_x + i * scale
+        if tick_x <= offset_x + plate_draw_width + 1:
+            c.line(tick_x, offset_y, tick_x, offset_y - 5)
+            c.drawCentredString(tick_x, offset_y - 12, str(i))
+    
+    width_step = get_tick_step(mp.width)
+    for i in range(0, int(mp.width) + 1, width_step):
+        tick_y = offset_y + i * scale
+        if tick_y <= offset_y + plate_draw_height + 1:
+            c.line(offset_x, tick_y, offset_x - 5, tick_y)
+            c.drawRightString(offset_x - 7, tick_y - 2, str(i))
+
+
+# ============================================================
 # Streamlit UI
 # ============================================================
-st.set_page_config(
-    page_title="H-Beam 절단 최적화",
-    page_icon="🔧",
-    layout="wide"
-)
+st.set_page_config(page_title="H-Beam 절단 최적화", page_icon="🔧", layout="wide")
 
 st.title("🔧 H-Beam 철판 절단 최적화 시스템")
-st.markdown("""
-H-Beam 주문 데이터(CSV/Excel)를 업로드하면 최적의 통철판 절단 계획을 생성합니다.
+st.markdown("H-Beam 주문 데이터(CSV/Excel)를 업로드하면 최적의 통철판 절단 계획을 생성합니다.")
 
-**우선순위**: 절대규격 준수 > 로스 최소화 > 선호규격 준수
-""")
-
-# 사이드바 - 설정
 with st.sidebar:
-    st.header("⚙️ 제약조건 설정")
-    
-    st.subheader("절대 제한")
+    st.header("⚙️ 제약조건")
     st.text(f"길이: {MIN_LENGTH:,} ~ {MAX_LENGTH:,} mm")
     st.text(f"너비: {MIN_WIDTH:,} ~ {MAX_WIDTH:,} mm")
     st.text(f"중량: ≤ {MAX_WEIGHT:,} kg")
-    
-    st.subheader("선호 범위")
+    st.markdown("---")
+    st.markdown("**선호 범위**")
     st.text(f"길이: {PREFERRED_LENGTH_MIN:,} ~ {PREFERRED_LENGTH_MAX:,} mm")
     st.text(f"너비: {PREFERRED_WIDTH_MIN:,} ~ {PREFERRED_WIDTH_MAX:,} mm")
-    
-    st.markdown("---")
-    st.markdown("### 📝 입력 파일 형식")
-    st.code("NO, Material, H, B, tw, tf, Length, Quantity")
 
-# 파일 업로드
-uploaded = st.file_uploader(
-    "📤 주문 파일 업로드 (CSV 또는 Excel)",
-    type=['csv', 'xlsx'],
-    help="H-Beam 주문 데이터가 포함된 파일을 업로드하세요."
-)
+uploaded = st.file_uploader("📤 주문 파일 업로드 (CSV/Excel)", type=['csv', 'xlsx'])
 
 if uploaded:
     try:
-        # 파일 읽기
-        if uploaded.name.endswith('.csv'):
-            df = pd.read_csv(uploaded)
-        else:
-            df = pd.read_excel(uploaded)
-        
+        df = pd.read_csv(uploaded) if uploaded.name.endswith('.csv') else pd.read_excel(uploaded)
         st.success(f"✅ {len(df)}개 주문 로드됨")
         
-        with st.expander("📋 업로드된 데이터 미리보기", expanded=True):
+        with st.expander("📋 데이터 미리보기", expanded=True):
             st.dataframe(df.head(10), use_container_width=True)
         
-        # 컬럼 매핑
         st.subheader("📋 컬럼 매핑")
-        st.markdown("입력 파일의 컬럼을 올바른 필드에 매핑해주세요.")
-        
         required = ['no', 'material', 'H', 'B', 'tw', 'tf', 'length', 'quantity']
         col_map = {}
         
         cols = st.columns(4)
         for i, req in enumerate(required):
             with cols[i % 4]:
-                # 자동 매핑 시도
                 default_idx = 0
                 for j, col in enumerate(df.columns):
                     if req.lower() in col.lower():
                         default_idx = j
                         break
-                
-                col_map[req] = st.selectbox(
-                    f"{req}",
-                    df.columns.tolist(),
-                    index=default_idx,
-                    key=f"col_{req}"
-                )
+                col_map[req] = st.selectbox(f"{req}", df.columns.tolist(), index=default_idx, key=f"col_{req}")
         
-        # 최적화 실행
         if st.button("🚀 최적화 실행", type="primary", use_container_width=True):
-            with st.spinner("최적화 중... 잠시만 기다려주세요."):
-                # 데이터 변환
+            with st.spinner("최적화 중..."):
                 orders = []
                 for _, row in df.iterrows():
                     try:
@@ -1043,125 +1190,72 @@ if uploaded:
                             'length': float(row[col_map['length']]),
                             'quantity': int(row[col_map['quantity']])
                         })
-                    except Exception as e:
-                        st.warning(f"행 건너뜀: {e}")
+                    except:
                         continue
                 
                 if not orders:
-                    st.error("❌ 유효한 주문 데이터가 없습니다.")
+                    st.error("❌ 유효한 주문 없음")
                     st.stop()
                 
-                # 철판 변환
                 plates = convert_hbeam_to_plates(orders)
-                
-                # 최적화 실행
                 results = optimize_cutting(plates)
                 
-                st.success(f"✅ 최적화 완료! {len(results)}개 통철판 생성")
+                st.success(f"✅ 완료! {len(results)}개 통철판")
                 
-                # 통계 표시
-                st.subheader("📊 최적화 결과")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("통철판", f"{len(results):,}장")
+                c2.metric("총 중량", f"{sum(m.weight for m in results)/1000:,.1f}톤")
+                c3.metric("평균 사용률", f"{sum(m.usage_rate for m in results)/len(results)*100:.1f}%")
+                c4.metric("저효율(<85%)", f"{sum(1 for m in results if m.usage_rate < 0.85)}개")
                 
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("통철판 수", f"{len(results):,}장")
-                col2.metric("총 중량", f"{sum(m.weight for m in results)/1000:,.1f}톤")
-                col3.metric("평균 사용률", f"{sum(m.usage_rate for m in results)/len(results)*100:.1f}%")
-                col4.metric("저효율(<85%)", f"{sum(1 for m in results if m.usage_rate < 0.85)}개")
+                # 결과 저장 (session state)
+                st.session_state['results'] = results
+                st.session_state['orders'] = orders
                 
-                # 재질별 통계
-                st.subheader("📈 재질별 통계")
-                by_material = defaultdict(list)
-                for mp in results:
-                    by_material[mp.material].append(mp)
+                # 테이블
+                result_data = [{'No': m.seq, 'Material': m.material, 'Thickness': m.thickness,
+                    'Length': m.length, 'Width': m.width, 'Weight': round(m.weight,1),
+                    'Plates': m.plate_count, 'Usage%': round(m.usage_rate*100,1)} for m in results]
+                st.dataframe(pd.DataFrame(result_data), use_container_width=True, height=400)
                 
-                mat_data = []
-                for mat, mps in sorted(by_material.items()):
-                    mat_data.append({
-                        '재질': mat,
-                        '통철판 수': len(mps),
-                        '중량(kg)': f"{sum(m.weight for m in mps):,.0f}",
-                        '평균 사용률': f"{sum(m.usage_rate for m in mps)/len(mps)*100:.1f}%"
-                    })
-                st.dataframe(pd.DataFrame(mat_data), use_container_width=True)
-                
-                # 결과 테이블
-                st.subheader("📋 통철판 목록")
-                result_data = []
-                for mp in results:
-                    result_data.append({
-                        'No': mp.seq,
-                        'Material': mp.material,
-                        'Thickness': mp.thickness,
-                        'Length': mp.length,
-                        'Width': mp.width,
-                        'Weight(kg)': round(mp.weight, 1),
-                        'Plates': mp.plate_count,
-                        'Usage%': round(mp.usage_rate * 100, 1)
-                    })
-                
-                result_df = pd.DataFrame(result_data)
-                st.dataframe(result_df, use_container_width=True, height=400)
-                
-                # 다운로드 버튼
+                # 다운로드 버튼들
                 st.subheader("📥 결과 다운로드")
-                
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    summary_excel = create_summary_excel(results)
-                    st.download_button(
-                        "📥 통철판 목록 다운로드",
-                        summary_excel.getvalue(),
-                        "master_plates.xlsx",
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
+                    st.download_button("📥 통철판 목록 (Excel)", 
+                                      create_summary_excel(results).getvalue(),
+                                      "master_plates.xlsx",
+                                      use_container_width=True)
                 
                 with col2:
-                    formatted_excel = save_result_formatted(results, orders)
-                    st.download_button(
-                        "📥 상세 결과 다운로드 (요청 형식)",
-                        formatted_excel.getvalue(),
-                        "cutting_result_formatted.xlsx",
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
+                    st.download_button("📥 상세 결과 (Excel)", 
+                                      save_result_formatted(results, orders).getvalue(),
+                                      "cutting_result.xlsx",
+                                      use_container_width=True)
+                
+                with col3:
+                    st.download_button("📥 레이아웃 도면 (PDF)", 
+                                      generate_pdf(results).getvalue(),
+                                      "cutting_layout.pdf",
+                                      mime="application/pdf",
+                                      use_container_width=True)
     
     except Exception as e:
-        st.error(f"❌ 오류 발생: {e}")
+        st.error(f"❌ 오류: {e}")
         st.exception(e)
 
 else:
-    # 샘플 데이터 표시
-    st.info("👆 위에서 파일을 업로드하거나, 아래 샘플 데이터를 참고하세요.")
+    st.info("👆 파일을 업로드하세요")
     
-    st.subheader("📝 입력 파일 예시")
-    sample_data = pd.DataFrame({
-        'NO': [1, 2, 3],
-        'Material': ['SS400', 'SM490', 'KS SM355A'],
-        'H': [400, 500, 350],
-        'B': [200, 250, 175],
-        'tw': [10, 12, 10],
-        'tf': [16, 20, 14],
-        'Length': [8000, 10000, 7500],
-        'Quantity': [50, 30, 60]
+    sample = pd.DataFrame({
+        'NO': [1, 2, 3], 'Material': ['SS400', 'SM490', 'KS SM355A'],
+        'H': [400, 500, 350], 'B': [200, 250, 175],
+        'tw': [10, 12, 10], 'tf': [16, 20, 14],
+        'Length': [8000, 10000, 7500], 'Quantity': [50, 30, 60]
     })
-    st.dataframe(sample_data, use_container_width=True)
-    
-    # 샘플 다운로드
-    sample_csv = sample_data.to_csv(index=False)
-    st.download_button(
-        "📥 샘플 CSV 다운로드",
-        sample_csv,
-        "sample_orders.csv",
-        "text/csv"
-    )
+    st.dataframe(sample, use_container_width=True)
+    st.download_button("📥 샘플 CSV", sample.to_csv(index=False), "sample.csv", "text/csv")
 
-# 푸터
 st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: gray;'>
-    H-Beam 철판 절단 최적화 시스템 v2.0 | 
-    우선순위: 절대규격 > 로스최소화 > 선호규격
-</div>
-""", unsafe_allow_html=True)
+st.caption("H-Beam 절단 최적화 v2.0 | 우선순위: 절대규격 > 로스최소화 > 선호규격")
